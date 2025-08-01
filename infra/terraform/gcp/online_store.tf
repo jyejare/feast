@@ -7,7 +7,7 @@ resource "google_redis_instance" "online_store" {
 
   authorized_network = data.google_compute_network.redis-network.id
 
-  redis_version = "REDIS_5_0"
+  redis_version = "REDIS_8_0"
   display_name  = "Feast Online Store"
 
 }
