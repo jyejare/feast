@@ -45,6 +45,31 @@ def fetch_historical_features_entity_df(store: FeatureStore, for_batch_scoring: 
     except Exception as e:
         print(f"Unexpected error while fetching historical features: {e}")
 
+
+def fetch_historical_features_by_date_range(store: FeatureStore):
+    """Fetch historical features by date range."""
+    try:
+
+        start_date = datetime(2021, 4, 12, 10, 59, 42)
+        end_date = datetime(2021, 4, 12, 16, 40, 26)
+
+        training_df = store.get_historical_features(
+            start_date=start_date,
+            end_date=end_date,
+            features=[
+                "driver_hourly_stats:conv_rate",
+                "driver_hourly_stats:acc_rate",
+                "driver_hourly_stats:avg_daily_trips"
+            ],
+        ).to_df()
+        print(f"Successfully fetched historical features by date range:\n", training_df.head())
+
+    except PermissionError:
+        print("\n*** PERMISSION DENIED *** Cannot fetch historical features.")
+    except Exception as e:
+        print(f"Unexpected error while fetching historical features: {e}")
+
+
 def fetch_online_features(store: FeatureStore, source: str = ""):
     """Fetch online features from the feature store."""
     try:
@@ -111,7 +136,11 @@ def check_permissions():
     print("\n--- Fetching Historical Features for Batch Scoring ---")
     fetch_historical_features_entity_df(store, for_batch_scoring=True)
 
-    # Step 3: Apply Feature Store
+    # Step 3: Fetch Historical Features by Date Range
+    print("\n--- Fetching Historical Features by Date Range ---")
+    fetch_historical_features_by_date_range(store)
+
+    # Step 4: Apply Feature Store
     print("\n--- Write to Feature Store ---")
     try:
         store.apply(feature_views)
@@ -121,7 +150,7 @@ def check_permissions():
     except Exception as e:
         print(f"Unexpected error testing write access: {e}")
 
-    # Step 4: Fetch Online Features
+    # Step 5: Fetch Online Features
     print("\n--- Fetching Online Features ---")
     fetch_online_features(store)
 
@@ -132,7 +161,7 @@ def check_permissions():
     fetch_online_features(store, source="push")
 
     print("\n--- Performing Push Source ---")
-    # Step 5: Simulate Event Push (Streaming Ingestion)
+    # Step 6: Simulate Event Push (Streaming Ingestion)
     try:
         event_df = pd.DataFrame.from_dict(
             {
