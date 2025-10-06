@@ -129,7 +129,33 @@ func (authz *FeastAuthorization) setFeastClusterRole(clusterRole *rbacv1.Cluster
 			Resources: []string{"rolebindings"},
 			Verbs:     []string{"list"},
 		},
+		{
+			APIGroups: []string{"authentication.k8s.io"},
+			Resources: []string{"tokenreviews"},
+			Verbs:     []string{"create"},
+		},
+		{
+			APIGroups: []string{rbacv1.GroupName},
+			Resources: []string{"subjectaccessreviews"},
+			Verbs:     []string{"create"},
+		},
+		{
+			APIGroups: []string{""},
+			Resources: []string{"namespaces"},
+			Verbs:     []string{"get", "list", "watch"},
+		},
+		{
+			APIGroups: []string{rbacv1.GroupName},
+			Resources: []string{"clusterroles"},
+			Verbs:     []string{"get", "list"},
+		},
+		{
+			APIGroups: []string{rbacv1.GroupName},
+			Resources: []string{"clusterrolebindings"},
+			Verbs:     []string{"get", "list"},
+		},
 	}
+	// Don't set controller reference for shared ClusterRole
 	return nil
 }
 
@@ -320,7 +346,9 @@ func (authz *FeastAuthorization) getFeastClusterRoleName() string {
 }
 
 func GetFeastClusterRoleName(featureStore *feastdevv1alpha1.FeatureStore) string {
-	return services.GetFeastName(featureStore) + "-cluster"
+	// Use a shared ClusterRole name for all Feast instances
+	// This allows multiple FeatureStores to share the same Token Access Review permissions
+	return "feast-token-review-cluster-role"
 }
 
 func (authz *FeastAuthorization) getFeastClusterRoleBindingName() string {
