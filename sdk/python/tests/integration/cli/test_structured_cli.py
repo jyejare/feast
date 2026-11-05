@@ -79,14 +79,47 @@ def test_local_structured_plan_apply_and_reads(tmp_path: Path) -> None:
         ).fetchall()
     assert not any("driver_stats" in name for (name,) in tables)
 
-    applied = payload(run_cli(tmp_path, "--output", "json", "apply"))
+    apply_progress = tmp_path / "apply-events.jsonl"
+    applied = payload(
+        run_cli(
+            tmp_path,
+            "--output",
+            "json",
+            "apply",
+            "--progress-file",
+            str(apply_progress),
+        )
+    )
     assert applied["data"]["projects"][0]["changed"] is True
     assert applied["data"]["projects"][0]["infrastructure_changes"]
+    apply_events = [
+        json.loads(line) for line in apply_progress.read_text().splitlines()
+    ]
+    assert [event["event"] for event in apply_events] == [
+        "started",
+        "project_completed",
+        "completed",
+    ]
+    assert all(
+        event["operation_id"] == applied["data"]["operation_id"]
+        for event in apply_events
+    )
+    assert apply_progress.stat().st_mode & 0o077 == 0
     unchanged = payload(run_cli(tmp_path, "--output", "yaml", "apply"))
     assert unchanged["data"]["projects"][0]["changed"] is False
 
     listed = payload(run_cli(tmp_path, "--output", "json", "entities", "list"))
     assert any(item["name"] == "driver" for item in listed["data"]["items"])
+    config = payload(run_cli(tmp_path, "--output", "json", "configuration"))
+    assert config["data"]["project"] == "agent_test"
+    assert config["data"]["online_store_type"] == "sqlite"
+    assert "online.db" not in json.dumps(config)
+    current = payload(
+        run_cli(tmp_path, "--output", "json", "projects", "current_project")
+    )
+    assert current["data"]["name"] == "agent_test"
+    permissions = payload(run_cli(tmp_path, "--output", "json", "permissions", "list"))
+    assert permissions["data"]["items"] == []
     described = payload(
         run_cli(tmp_path, "--output", "yaml", "entities", "describe", "driver")
     )
@@ -111,6 +144,72 @@ def test_local_structured_plan_apply_and_reads(tmp_path: Path) -> None:
     features = payload(run_cli(tmp_path, "--output", "json", "features", "list"))
     assert features["data"]["items"][0]["feature_name"] == "conv_rate"
     assert features["data"]["items"][0]["feature_view"] == "driver_stats"
+
+    progress = tmp_path / "events.jsonl"
+    materialized = payload(
+        run_cli(
+            tmp_path,
+            "--output",
+            "json",
+            "materialize",
+            "2025-12-30T00:00:00+00:00",
+            "2026-01-02T00:00:00+00:00",
+            "--views",
+            "driver_stats",
+            "--progress-file",
+            str(progress),
+        )
+    )
+    assert materialized["data"]["completed_views"][0]["name"] == "driver_stats"
+    assert materialized["data"]["completed_views"][0]["end_ts"].endswith("+00:00")
+    events = [json.loads(line) for line in progress.read_text().splitlines()]
+    assert [event["event"] for event in events] == [
+        "started",
+        "view_completed",
+        "completed",
+    ]
+    assert all(
+        event["operation_id"] == materialized["data"]["operation_id"]
+        for event in events
+    )
+    assert progress.stat().st_mode & 0o077 == 0
+    assert "\n{" not in json.dumps(materialized)  # result is one document, not JSONL
+
+    incremented = payload(
+        run_cli(
+            tmp_path,
+            "--output",
+            "yaml",
+            "materialize-incremental",
+            "2026-01-03T00:00:00+00:00",
+            "--views",
+            "driver_stats",
+        )
+    )
+    assert incremented["data"]["incremental"] is True
+    assert incremented["data"]["completed_views"][0]["start_ts"]
+
+    bad_progress = run_cli(
+        tmp_path,
+        "--output",
+        "json",
+        "materialize",
+        "2025-12-30T00:00:00+00:00",
+        "2026-01-02T00:00:00+00:00",
+        "--progress-file",
+        str(progress),
+    )
+    assert bad_progress.returncode == 2
+    assert json.loads(bad_progress.stdout)["error"]["code"] == "INVALID_ARGUMENT"
+
+    duplicated_apply_progress = run_cli(
+        tmp_path, "--output", "json", "apply", "--progress-file", str(apply_progress)
+    )
+    assert duplicated_apply_progress.returncode == 2
+    assert (
+        json.loads(duplicated_apply_progress.stdout)["error"]["code"]
+        == "INVALID_ARGUMENT"
+    )
 
 
 @pytest.mark.integration

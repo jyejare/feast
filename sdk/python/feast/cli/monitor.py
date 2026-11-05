@@ -203,10 +203,9 @@ def _run_log_monitoring(
         click.echo(f"Duration: {result['duration_ms']}ms")
     else:
         if not feature_service_name:
-            click.echo(
-                "Error: --feature-service is required for log source with explicit dates."
+            raise click.UsageError(
+                "--feature-service is required for log source with explicit dates."
             )
-            return
 
         start_d = date.fromisoformat(start_date) if start_date else None
         end_d = date.fromisoformat(end_date) if end_date else None

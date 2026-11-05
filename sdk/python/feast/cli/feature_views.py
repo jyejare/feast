@@ -108,8 +108,9 @@ def feature_view_enable(ctx: click.Context, name: str):
         sys.exit(1)
 
     if not isinstance(fv, (FeatureView, OnDemandFeatureView)):
-        print(f"Feature view '{name}' does not support enable/disable.")
-        return
+        raise click.ClickException(
+            f"Feature view '{name}' does not support enable/disable."
+        )
 
     if fv.enabled:
         print(f"Feature view '{name}' is already enabled.")
@@ -135,8 +136,9 @@ def feature_view_disable(ctx: click.Context, name: str):
         sys.exit(1)
 
     if not isinstance(fv, (FeatureView, OnDemandFeatureView)):
-        print(f"Feature view '{name}' does not support enable/disable.")
-        return
+        raise click.ClickException(
+            f"Feature view '{name}' does not support enable/disable."
+        )
 
     if not fv.enabled:
         print(f"Feature view '{name}' is already disabled.")
@@ -169,8 +171,9 @@ def feature_view_set_state(ctx: click.Context, name: str, state: str):
         sys.exit(1)
 
     if not isinstance(fv, (FeatureView, OnDemandFeatureView)):
-        print(f"Feature view '{name}' does not support state management.")
-        return
+        raise click.ClickException(
+            f"Feature view '{name}' does not support state management."
+        )
 
     new_state = FeatureViewState[state.upper()]
     if fv.state == new_state:
@@ -181,11 +184,10 @@ def feature_view_set_state(ctx: click.Context, name: str, state: str):
         current = fv.state.name
         allowed = _VALID_STATE_TRANSITIONS.get(fv.state, set())
         allowed_names = ", ".join(sorted(s.name for s in allowed)) or "none"
-        print(
+        raise click.UsageError(
             f"Invalid state transition: {current} -> {new_state.name}. "
             f"Allowed transitions from {current}: {allowed_names}."
         )
-        return
 
     fv.state = new_state
     store.registry.apply_feature_view(fv, store.project)

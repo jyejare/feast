@@ -8,14 +8,22 @@ import sys
 from contextlib import contextmanager, redirect_stdout
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, Iterator, Optional, Sequence
+from pathlib import Path
+from typing import Any, Callable, Iterator, Optional, Sequence
 
 import click
 import yaml
 
-from feast.errors import FeastObjectNotFoundException, FeastProviderLoginError
+from feast.errors import (
+    FeastObjectNotFoundException,
+    FeastProviderLoginError,
+    PermissionNotFoundException,
+    ProjectNotFoundException,
+)
 from feast.operation_report import RepositoryConfigurationMissing
 from feast.repo_config import FeastConfigError
+
+MAX_RESULT_BYTES = 1_000_000
 
 
 @dataclass
@@ -26,6 +34,7 @@ class Invocation:
     operation_started: bool = False
     completed_projects: list[dict[str, Any]] = field(default_factory=list)
     help_text: Optional[str] = None
+    operation_data: Optional[dict[str, Any]] = None
 
 
 invocation: ContextVar[Optional[Invocation]] = ContextVar(
@@ -45,6 +54,25 @@ class StructuredError(click.ClickException):
 
 def machine_output() -> bool:
     return invocation.get() is not None
+
+
+@contextmanager
+def progress_events(path: Path) -> Iterator[Callable[[dict[str, Any]], None]]:
+    """Create a separate, exclusive JSONL file accessible only to its owner."""
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(path, flags, 0o600)
+    except FileExistsError as e:
+        raise click.UsageError("Progress file already exists; choose a new path") from e
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+
+        def write(event: dict[str, Any]) -> None:
+            stream.write(
+                json.dumps({"schema_version": "1", **event}, allow_nan=False) + "\n"
+            )
+            stream.flush()
+
+        yield write
 
 
 @contextmanager
@@ -143,7 +171,14 @@ def error_response(
             "Access was denied.",
             "Verify the caller's permissions.",
         )
-    elif isinstance(error, FeastObjectNotFoundException):
+    elif isinstance(
+        error,
+        (
+            FeastObjectNotFoundException,
+            ProjectNotFoundException,
+            PermissionNotFoundException,
+        ),
+    ):
         code, message, hint = (
             "NOT_FOUND",
             "The requested object was not found.",
@@ -165,7 +200,7 @@ def error_response(
         )
     data = None
     if state.operation_started:
-        data = {
+        data = state.operation_data or {
             "completed_projects": state.completed_projects,
             "remaining_outcome": "unknown",
         }
@@ -237,7 +272,13 @@ class StructuredGroup(click.Group):
                     "error": None,
                 }
                 # Check serialization before writing any bytes to stdout.
-                json.dumps(response, allow_nan=False)
+                encoded = json.dumps(response, allow_nan=False, ensure_ascii=False)
+                if len(encoded.encode("utf-8")) > MAX_RESULT_BYTES:
+                    raise StructuredError(
+                        "RESULT_TOO_LARGE",
+                        "The CLI result exceeds the 1 MB output limit.",
+                        "Use narrower filters or an SDK export rather than passing bulk data to an agent.",
+                    )
             except (Exception, SystemExit, KeyboardInterrupt) as error:
                 if isinstance(error, click.UsageError) and error.ctx is not None:
                     state.command = "feast " + " ".join(
@@ -245,6 +286,21 @@ class StructuredGroup(click.Group):
                     )
                     state.command = state.command.strip()
                 response, exit_code = error_response(error, state)
+                # If an operation already changed state, its completed-project
+                # details may themselves exceed the result limit. Retain the
+                # uncertainty and count without rendering a huge error payload.
+                if (
+                    len(
+                        json.dumps(
+                            response, allow_nan=False, ensure_ascii=False
+                        ).encode("utf-8")
+                    )
+                    > MAX_RESULT_BYTES
+                ):
+                    response["data"] = {
+                        "completed_count": len(state.completed_projects),
+                        "remaining_outcome": "unknown",
+                    }
             render(response, output)
         finally:
             invocation.reset(token)

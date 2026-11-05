@@ -96,6 +96,65 @@ Compatibility notes:
 See the [agent-friendly CLI RFC](../adr/rfc-agent-friendly-cli.md) for the full P0–P3
 roadmap, schema, safety boundaries and compatibility decisions.
 
+### Follow-up structured commands (P2/P3 implementation branch)
+
+The opt-in format also supports additional registry list/describe commands,
+`projects current_project`, `feature-views list-versions`, bounded online retrieval
+(100 entity rows maximum) and historical retrieval requiring a bounded `--dataframe`
+(100 input/output rows maximum), explicit `projects delete NAME --yes`, and validated
+feature-view enable/disable/state mutations. These do not change legacy defaults.
+Machine result documents are capped at 1 MB; use the SDK/export for bulk data.
+Entity inputs are also capped at 1 MB and requests accept at most 100 feature
+references; these limits are not a guarantee of bounded provider query cost.
+Inspect `feast --output json commands` before invoking an operation: server commands,
+raw endpoint/registry dumps, automatic/multi-view monitoring, `dbt import`,
+and provider-specific
+commands still reject structured mode until their redaction/outcome contract is
+implemented. An unsupported command is not automatically safe in legacy mode.
+`permissions list`, `describe`, `check`, and `list-roles` provide minimized policy
+metadata; role lists are visible only to callers authorized to list permissions.
+`dbt list --manifest-path FILE` exposes model names and optionally column names
+without dumping the full manifest;
+`configuration` exposes only project/provider and registry/online/offline store types
+(no credentials, paths, or full configuration);
+`registry create-schema` remains a mutating SQL DDL operation and fails on non-SQL
+registry backends.
+`monitor run` supports structured mode for a single log-backed feature service
+(`--source-type log --feature-service NAME`) or a single batch feature view
+(`--source-type batch --feature-view NAME`), both with explicit start/end dates
+and without baseline updates. Batch mode uses strict service error propagation,
+including feature-service aggregate failures. Automatic or multi-view monitoring
+still swallows individual failures and remains unsupported rather than returning a
+misleading successful envelope. The log-source result reports completed/skipped;
+neither result includes raw provider diagnostics.
+The broader P2/P3 roadmap remains a proposed design; see the
+[implementation-status section](../adr/rfc-agent-friendly-cli.md#implementation-status-of-the-follow-up-branch)
+for capabilities not yet implemented. A structured-mode rejection must never be
+treated as permission to retry the corresponding legacy operation automatically.
+Structured `delete NAME --type TYPE --yes` resolves only the requested object type;
+`teardown --yes` also requires explicit confirmation. These flags are optional in
+legacy mode and do not change existing first-match or teardown behavior there.
+
+For synchronous, local SQLite materialization with supported regular views:
+
+```sh
+feast --output json materialize 2026-09-01T00:00:00+00:00 2026-09-02T00:00:00+00:00 \
+  --views driver_stats --progress-file ./materialization-events.jsonl
+feast --output json materialize-incremental 2026-09-03T00:00:00+00:00 --views driver_stats
+```
+
+`--progress-file` requires root `--output`; it writes ordered JSONL events to a new
+owner-only file, separate from the final result document on stdout. Structured
+`apply` accepts the same flag and emits started/project_completed/completed (or
+failed) events. A per-invocation `operation_id` correlates events with the final
+document; it is not durable or resumable. The materialization result reports only
+views whose watermark was applied; failures retain `remaining_outcome: unknown`.
+No row count, cross-provider idempotency, async completion, or rollback is implied.
+Batch engines, remote topology and on-demand views remain unsupported in this mode.
+
+See [agent CLI workflows](../how-to-guides/agent-cli-workflows.md) for an explicit
+discover → inspect → preview → approved execution → verify example and MCP boundary.
+
 **chdir \(-c, --chdir\)**
 
 This command allows users to run Feast CLI commands in a different folder from the current working directory.

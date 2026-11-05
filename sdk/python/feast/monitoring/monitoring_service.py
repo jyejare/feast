@@ -474,6 +474,7 @@ class MonitoringService:
         end_date: Optional[date] = None,
         granularity: str = "daily",
         set_baseline: bool = False,
+        raise_on_error: bool = False,
     ) -> Dict[str, Any]:
         self._ensure_monitoring_tables()
         if granularity not in VALID_GRANULARITIES:
@@ -511,12 +512,15 @@ class MonitoringService:
                 logger.exception(
                     "Failed to compute metrics for feature view '%s'", fv.name
                 )
+                if raise_on_error:
+                    raise
 
         total_services = self._compute_feature_service_metrics(
             project=project,
             granularity=granularity,
             metric_dates=list(computed_dates),
             set_baseline=set_baseline,
+            raise_on_error=raise_on_error,
         )
 
         duration_ms = int((time.time() - start_time) * 1000)
@@ -1265,6 +1269,7 @@ class MonitoringService:
         granularity: str,
         metric_dates: List[date],
         set_baseline: bool,
+        raise_on_error: bool = False,
     ) -> int:
         if not metric_dates:
             return 0
@@ -1346,5 +1351,7 @@ class MonitoringService:
                     count += 1
             except Exception:
                 logger.exception("Failed to compute service metrics for '%s'", fs.name)
+                if raise_on_error:
+                    raise
 
         return count

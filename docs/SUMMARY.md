@@ -218,6 +218,7 @@
 * [OpenLineage Integration](reference/openlineage.md)
 * [MLflow Integration](reference/mlflow.md)
 * [Feast CLI reference](reference/feast-cli-commands.md)
+* [Agent CLI workflows](how-to-guides/agent-cli-workflows.md)
 * [Python API reference](http://rtd.feast.dev)
 * [Usage](reference/usage.md)
 

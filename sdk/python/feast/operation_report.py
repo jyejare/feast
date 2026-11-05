@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable, Optional
+from uuid import uuid4
 
 import click
 
@@ -16,6 +17,8 @@ from feast.diff.registry_diff import RegistryDiff
 class OperationReport:
     projects: list[dict[str, Any]] = field(default_factory=list)
     mutation_started: bool = False
+    on_event: Optional[Callable[[dict[str, Any]], None]] = None
+    operation_id: str = field(default_factory=lambda: uuid4().hex)
 
     def record(self, project: str, registry: RegistryDiff, infra: InfraDiff) -> None:
         # Values may contain credentials or serialized code. Report field names only.
@@ -55,6 +58,15 @@ class OperationReport:
                 ),
             }
         )
+        if self.on_event is not None:
+            self.on_event(
+                {
+                    "event": "project_completed",
+                    "operation_id": self.operation_id,
+                    "project": project,
+                    "changed": bool(registry_changes or infra_changes),
+                }
+            )
 
 
 class StructuredOperationUnsupported(Exception):

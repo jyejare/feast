@@ -230,6 +230,30 @@ remain explicit. Authentication/authorization continue through the existing SDK.
 
 ## Delivery roadmap and acceptance criteria
 
+### Implementation status of the follow-up branch
+
+The follow-up branch implements a bounded subset of P2/P3. Structured read-only
+inspection covers registry object list/describe, minimized configuration and
+permission inspection, command metadata, and bounded retrieval. Local synchronous
+SQLite materialization reports watermark-confirmed view completions; `apply` and
+materialization can write correlated JSONL events to separate, exclusive files.
+Structured deletion requires an explicit confirmation and generic deletion also
+requires the object type. Monitoring supports one explicitly named log service or
+batch feature view with explicit dates. The batch path opts into strict exception
+propagation for both view computation and aggregate metrics; legacy monitoring
+retains its existing best-effort default.
+
+Unimplemented or deliberately unsupported: async/remote and batch-engine
+materialization results, on-demand view materialization, automatic or multi-target
+monitoring, raw registry/endpoint dumps, `dbt import`, optional MLflow operations,
+durable operation/resume identifiers, server readiness/shutdown event contracts,
+and an agent-context installer. The discovery manifest must continue to report
+these capabilities as unsupported. The workflow guide documents a manual approval
+step and the existing MCP boundary; it does not create a new MCP transport.
+
+This status is informational and does **not** change the RFC's Proposed status or
+declare the full P2/P3 acceptance criteria complete.
+
 ### P0 — Audit and correctness (initial implementation)
 
 - Inventory every command and classify outputs, errors, effects and prompts.

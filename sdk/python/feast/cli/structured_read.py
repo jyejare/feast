@@ -54,6 +54,35 @@ def describe_object(obj: Any) -> dict[str, Any]:
 def read_command(path: str, ctx: click.Context, **params: Any) -> Any:
     store = create_feature_store(ctx)
     resource, action = path.split()
+    if resource == "projects" and action == "current_project":
+        return describe_object(store.get_project(name=None))
+    if resource == "feature-views" and action == "list-versions":
+        try:
+            versions = store.list_feature_view_versions(params["name"])
+        except NotImplementedError as e:
+            from feast.cli.output import StructuredError
+
+            raise StructuredError(
+                "UNSUPPORTED_CAPABILITY",
+                "Version history is not available.",
+                "Use a registry backend supporting version history.",
+            ) from e
+        return {
+            "items": sorted(
+                [
+                    {
+                        "version": v["version"],
+                        "type": v["feature_view_type"],
+                        "created_ts": v["created_timestamp"].isoformat()
+                        if hasattr(v["created_timestamp"], "isoformat")
+                        else str(v["created_timestamp"]),
+                        "version_id": v["version_id"],
+                    }
+                    for v in versions
+                ],
+                key=lambda v: v["version"],
+            )
+        }
     if resource == "features":
         views = [
             *store.list_batch_feature_views(),
@@ -82,6 +111,12 @@ def read_command(path: str, ctx: click.Context, **params: Any) -> Any:
         "feature-views": "feature_view",
         "feature-services": "feature_service",
         "data-sources": "data_source",
+        "projects": "project",
+        "label-views": "label_view",
+        "stream-feature-views": "stream_feature_view",
+        "on-demand-feature-views": "on_demand_feature_view",
+        "saved-datasets": "saved_dataset",
+        "validation-references": "validation_reference",
     }[resource]
     if action == "describe":
         return describe_object(getattr(store, f"get_{singular}")(params["name"]))
@@ -92,7 +127,13 @@ def read_command(path: str, ctx: click.Context, **params: Any) -> Any:
             *store.list_on_demand_feature_views(tags=tags),
         ]
     else:
-        plural = "entities" if resource == "entities" else singular + "s"
+        plural = (
+            "entities"
+            if resource == "entities"
+            else "data_sources"
+            if resource == "data-sources"
+            else singular + "s"
+        )
         objects = getattr(store, f"list_{plural}")(tags=tags)
     return {
         "items": sorted(

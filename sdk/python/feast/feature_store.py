@@ -39,6 +39,7 @@ from typing import (
 if TYPE_CHECKING:
     from feast.diff.apply_progress import ApplyProgressContext
     from feast.embedder import EmbeddingProvider
+    from feast.materialization_report import MaterializationReport
 
 import pandas as pd
 import pyarrow as pa
@@ -2597,6 +2598,7 @@ class FeatureStore:
         version: Optional[str] = None,
         force: bool = False,
         run_async: bool = False,
+        report: Optional["MaterializationReport"] = None,
     ) -> None:
         """
         Materialize incremental new data from the offline store into the online store.
@@ -2635,6 +2637,8 @@ class FeatureStore:
             <BLANKLINE>
             ...
         """
+        if report is not None and self._is_remote_topology():
+            raise ValueError("Structured materialization requires a local topology")
         if self._is_remote_topology():
             payload: Dict[str, Any] = {
                 "end_ts": end_date.isoformat(),
@@ -2655,6 +2659,29 @@ class FeatureStore:
         feature_views_to_materialize = self._get_feature_views_to_materialize(
             feature_views, version=parsed_version
         )
+        if report is not None:
+            # Batch jobs and on-demand views need their own truthful outcome contract.
+            if not feature_views_to_materialize:
+                raise ValueError(
+                    "Structured materialization requires at least one eligible view"
+                )
+            if any(
+                isinstance(fv, OnDemandFeatureView)
+                for fv in feature_views_to_materialize
+            ):
+                raise ValueError(
+                    "Structured materialization does not support on-demand views"
+                )
+            if getattr(
+                getattr(self._get_provider(), "batch_engine", None),
+                "supports_batch",
+                False,
+            ):
+                raise ValueError(
+                    "Structured materialization does not support batch engines"
+                )
+            report.end_date = utils.make_tzaware(end_date) or end_date
+            report.begin()
         _print_materialization_log(
             None,
             end_date,
@@ -2804,6 +2831,8 @@ class FeatureStore:
                         start_date,
                         end_date_tz,
                     )
+                    if report is not None:
+                        report.completed(feature_view.name, start_date)
 
             materialized_fv_names = [
                 fv.name
@@ -2842,6 +2871,7 @@ class FeatureStore:
         version: Optional[str] = None,
         force: bool = False,
         run_async: bool = False,
+        report: Optional["MaterializationReport"] = None,
     ) -> None:
         """
         Materialize data from the offline store into the online store.
@@ -2879,6 +2909,8 @@ class FeatureStore:
             <BLANKLINE>
             ...
         """
+        if report is not None and self._is_remote_topology():
+            raise ValueError("Structured materialization requires a local topology")
         if self._is_remote_topology():
             payload: Dict[str, Any] = {
                 "start_ts": start_date.isoformat(),
@@ -2903,6 +2935,29 @@ class FeatureStore:
         feature_views_to_materialize = self._get_feature_views_to_materialize(
             feature_views, version=parsed_version
         )
+        if report is not None:
+            if not feature_views_to_materialize:
+                raise ValueError(
+                    "Structured materialization requires at least one eligible view"
+                )
+            if any(
+                isinstance(fv, OnDemandFeatureView)
+                for fv in feature_views_to_materialize
+            ):
+                raise ValueError(
+                    "Structured materialization does not support on-demand views"
+                )
+            if getattr(
+                getattr(self._get_provider(), "batch_engine", None),
+                "supports_batch",
+                False,
+            ):
+                raise ValueError(
+                    "Structured materialization does not support batch engines"
+                )
+            report.start_date = utils.make_tzaware(start_date) or start_date
+            report.end_date = utils.make_tzaware(end_date) or end_date
+            report.begin()
         _print_materialization_log(
             start_date,
             end_date,
@@ -3019,6 +3074,8 @@ class FeatureStore:
                         fv_start,
                         end_date,
                     )
+                    if report is not None:
+                        report.completed(feature_view.name, fv_start)
 
             materialized_fv_names = [
                 fv.name

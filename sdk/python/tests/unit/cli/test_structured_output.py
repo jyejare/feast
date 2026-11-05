@@ -91,9 +91,7 @@ def test_parse_errors_are_structured(args: list[str]) -> None:
     assert json.loads(result.output)["error"]["code"] == "INVALID_ARGUMENT"
 
 
-@pytest.mark.parametrize(
-    "args", [["teardown"], ["delete", "driver"], ["materialize"], ["init"]]
-)
+@pytest.mark.parametrize("args", [["serve"], ["init"]])
 def test_unsupported_commands_do_not_execute(args: list[str]) -> None:
     with (
         patch("feast.cli.cli.load_repo_config") as load,
@@ -277,7 +275,7 @@ def test_help_as_argument_does_not_bypass_guard() -> None:
     with patch("feast.cli.cli.create_feature_store") as create:
         result = CliRunner().invoke(cli, ["--output", "json", "delete", "--", "--help"])
     assert result.exit_code == 2, result.output
-    assert json.loads(result.output)["error"]["code"] == "UNSUPPORTED_OUTPUT"
+    assert json.loads(result.output)["error"]["code"] == "CONFIRMATION_REQUIRED"
     create.assert_not_called()
 
 

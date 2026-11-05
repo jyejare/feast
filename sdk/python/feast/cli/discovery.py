@@ -21,7 +21,56 @@ READ_COMMANDS = {
     )
     for action in ("list", "describe")
 }
-SUPPORTED_COMMANDS = READ_COMMANDS | {"commands", "version", "plan", "apply"}
+MORE_READ_COMMANDS = {
+    f"{resource} {action}"
+    for resource in (
+        "projects",
+        "label-views",
+        "stream-feature-views",
+        "on-demand-feature-views",
+        "saved-datasets",
+        "validation-references",
+    )
+    for action in ("list", "describe")
+}
+SUPPORTED_COMMANDS = (
+    READ_COMMANDS
+    | MORE_READ_COMMANDS
+    | {
+        "commands",
+        "version",
+        "plan",
+        "apply",
+        "materialize",
+        "materialize-incremental",
+        "feature-views list-versions",
+        "projects current_project",
+        "projects delete",
+        "feature-views enable",
+        "feature-views disable",
+        "feature-views set-state",
+        "get-online-features",
+        "get-historical-features",
+        "permissions list",
+        "permissions describe",
+        "permissions check",
+        "permissions list-roles",
+        "dbt list",
+        "configuration",
+        "registry create-schema",
+        "delete",
+        "teardown",
+        "monitor run",
+    }
+)
+MANAGED_COMMANDS = {
+    "materialize",
+    "materialize-incremental",
+    "projects delete",
+    "feature-views enable",
+    "feature-views disable",
+    "feature-views set-state",
+}
 DESTRUCTIVE_COMMANDS = {"delete", "teardown", "projects delete"}
 WRITE_COMMANDS = DESTRUCTIVE_COMMANDS | {
     "apply",
@@ -80,7 +129,12 @@ OTHER_READ_COMMANDS = {
 
 def capabilities(path: str) -> dict[str, Any]:
     effect = "unknown"
-    if path in READ_COMMANDS | OTHER_READ_COMMANDS | {"commands", "version"}:
+    if path == "dbt list":
+        effect = "preview"  # Reads a user-supplied manifest, not the Feast registry.
+    elif path in READ_COMMANDS | MORE_READ_COMMANDS | OTHER_READ_COMMANDS | {
+        "commands",
+        "version",
+    }:
         effect = "read"
     elif path == "plan":
         effect = "preview"
@@ -95,13 +149,28 @@ def capabilities(path: str) -> dict[str, Any]:
         "may_delete_resources": path in DESTRUCTIVE_COMMANDS | {"apply", "dbt import"},
         "requires_repository": path not in {"commands", "version", "init", "dbt list"},
         "confirmation": "--yes"
-        if path == "projects delete"
+        if path in {"projects delete", "delete", "teardown"}
         else ("template-dependent" if path == "init" else "none"),
         "retry_semantics": "read-only" if effect == "read" else "inspect-before-retry",
         "executes_repository_python": path in {"plan", "apply"},
         "structured_constraints": (
             {"provider": "local", "online_store": "sqlite", "auto_baseline": False}
             if path in {"plan", "apply"}
+            else {
+                "provider": "local",
+                "online_store": "sqlite",
+                "synchronous": True,
+                "batch_engine": False,
+                "on_demand_views": False,
+            }
+            if path in {"materialize", "materialize-incremental"}
+            else {
+                "source_type": ["log", "batch"],
+                "single_named_target_required": True,
+                "start_and_end_date_required": True,
+                "set_baseline": False,
+            }
+            if path == "monitor run"
             else None
         ),
     }
@@ -193,16 +262,61 @@ def install_dispatch(root: click.Group) -> None:
                     "Run feast commands to inspect supported commands, or omit the root --output option.",
                     exit_code=2,
                 )
-            if path in READ_COMMANDS:
+            if path in READ_COMMANDS | MORE_READ_COMMANDS | {
+                "projects current_project",
+                "feature-views list-versions",
+            }:
                 from feast.cli.structured_read import read_command
 
                 state.data = read_command(path, click.get_current_context(), **kwargs)
+            elif path in {"dbt list", "configuration"}:
+                from feast.cli.structured_misc import inspect
+
+                state.data = inspect(path, click.get_current_context(), kwargs)
+            elif path == "registry create-schema":
+                from feast.cli.structured_misc import create_registry_schema
+
+                state.data = create_registry_schema(click.get_current_context())
+            elif path in {"get-online-features", "get-historical-features"}:
+                from feast.cli.structured_retrieval import retrieve
+
+                state.data = retrieve(path, click.get_current_context(), **kwargs)
+            elif path.startswith("permissions "):
+                from feast.cli.structured_permissions import inspect_permissions
+
+                state.data = inspect_permissions(
+                    path, click.get_current_context(), **kwargs
+                )
+            elif path == "monitor run":
+                from feast.cli.structured_monitor import monitor_single_target
+
+                state.data = monitor_single_target(
+                    click.get_current_context(), **kwargs
+                )
+            elif path in {
+                "delete",
+                "teardown",
+                "projects delete",
+                "feature-views enable",
+                "feature-views disable",
+                "feature-views set-state",
+            }:
+                from feast.cli.structured_mutation import mutate
+
+                state.data = mutate(path, click.get_current_context(), **kwargs)
             elif path == "commands":
                 state.data = command_inventory(root)
             elif path == "version":
                 state.data = {"version": version("feast")}
-            else:
+            elif path in MANAGED_COMMANDS or path in {"plan", "apply"}:
                 callback(*args, **kwargs)
+            else:
+                raise StructuredError(
+                    "UNSUPPORTED_OUTPUT",
+                    "No structured handler is registered.",
+                    "Use feast commands to inspect supported commands.",
+                    exit_code=2,
+                )
             return state.data
 
         return dispatch

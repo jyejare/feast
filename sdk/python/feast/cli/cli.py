@@ -44,6 +44,7 @@ from feast.cli.output import (
     StructuredGroup,
     invocation,
     machine_output,
+    progress_events,
 )
 from feast.cli.permissions import feast_permissions_cmd
 from feast.cli.projects import projects_cmd
@@ -61,6 +62,7 @@ from feast.cli.ui import ui
 from feast.cli.validation_references import validation_references_cmd
 from feast.constants import FEAST_FS_YAML_FILE_PATH_ENV_NAME
 from feast.errors import FeastProviderLoginError
+from feast.materialization_report import MaterializationReport
 from feast.operation_report import OperationReport, StructuredOperationUnsupported
 from feast.repo_config import load_repo_config
 from feast.repo_operations import (
@@ -175,8 +177,30 @@ def version():
 
 @cli.command()
 @click.argument("object_id")
+@click.option(
+    "--type",
+    "object_type_name",
+    type=click.Choice(
+        [
+            "entity",
+            "feature-view",
+            "feature-service",
+            "data-source",
+            "saved-dataset",
+            "validation-reference",
+            "stream-feature-view",
+            "on-demand-feature-view",
+        ]
+    ),
+    help="Explicit object type (required in structured mode).",
+)
+@click.option(
+    "--yes", is_flag=True, help="Confirm deletion (required in structured mode)."
+)
 @click.pass_context
-def delete(ctx: click.Context, object_id: str):
+def delete(
+    ctx: click.Context, object_id: str, object_type_name: Optional[str], yes: bool
+):
     """
     Delete Feast Object
     """
@@ -319,6 +343,11 @@ def plan_command(
     help="Save new versions without promoting them to active. "
     "New versions are accessible via @v<N> reads and --version materialization.",
 )
+@click.option(
+    "--progress-file",
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Write structured JSONL events to a new file (requires root --output).",
+)
 @click.pass_context
 def apply_total_command(
     ctx: click.Context,
@@ -326,10 +355,15 @@ def apply_total_command(
     skip_feature_view_validation: bool,
     no_progress: bool,
     no_promote: bool,
+    progress_file: Optional[Path],
 ):
     """
     Create or update a feature store deployment
     """
+    if progress_file is not None and not machine_output():
+        raise click.UsageError("--progress-file requires root --output")
+    if machine_output() and progress_file is not None and progress_file.exists():
+        raise click.UsageError("Progress file already exists; choose a new path")
     repo = ctx.obj["CHDIR"]
     fs_yaml_file = ctx.obj["FS_YAML_FILE"]
     cli_check_repo(repo, fs_yaml_file)
@@ -344,6 +378,7 @@ def apply_total_command(
             skip_source_validation,
             skip_feature_view_validation,
             no_promote=no_promote,
+            progress_file=progress_file,
         )
         return
 
@@ -371,23 +406,66 @@ def _structured_operation(
     state = invocation.get()
     assert state is not None
     report = OperationReport()
-    try:
-        operation(*args, **kwargs, report=report)
-        state.data = {"projects": report.projects}
-    except StructuredOperationUnsupported as e:
-        raise StructuredError(
-            "UNSUPPORTED_CAPABILITY",
-            "Structured planning/apply is not supported by this configuration.",
-            "Use the local provider with SQLite and disable automatic baselines, or omit --output.",
-        ) from e
-    finally:
-        state.operation_started = report.mutation_started
-        state.completed_projects = report.projects
+    progress_file = kwargs.pop("progress_file", None)
+
+    def execute() -> None:
+        try:
+            operation(*args, **kwargs, report=report)
+        except StructuredOperationUnsupported as e:
+            raise StructuredError(
+                "UNSUPPORTED_CAPABILITY",
+                "Structured planning/apply is not supported by this configuration.",
+                "Use the local provider with SQLite and disable automatic baselines, or omit --output.",
+            ) from e
+        finally:
+            state.operation_started = report.mutation_started
+            state.completed_projects = report.projects
+            if report.mutation_started:
+                state.operation_data = {
+                    "operation_id": report.operation_id,
+                    "completed_projects": report.projects,
+                    "remaining_outcome": "unknown",
+                }
+
+    if progress_file is None:
+        execute()
+    else:
+        with progress_events(progress_file) as write_event:
+            report.on_event = write_event
+            write_event(
+                {
+                    "event": "started",
+                    "operation_id": report.operation_id,
+                    "command": state.command,
+                }
+            )
+            try:
+                execute()
+            except BaseException:
+                write_event(
+                    {
+                        "event": "failed",
+                        "operation_id": report.operation_id,
+                        "remaining_outcome": "unknown",
+                    }
+                )
+                raise
+            write_event(
+                {
+                    "event": "completed",
+                    "operation_id": report.operation_id,
+                    "completed_projects": len(report.projects),
+                }
+            )
+    state.data = {"operation_id": report.operation_id, "projects": report.projects}
 
 
 @cli.command("teardown", cls=NoOptionDefaultFormat)
+@click.option(
+    "--yes", is_flag=True, help="Confirm teardown (required in structured mode)."
+)
 @click.pass_context
-def teardown_command(ctx: click.Context):
+def teardown_command(ctx: click.Context, yes: bool):
     """
     Tear down deployed feature store infrastructure
     """
@@ -433,6 +511,11 @@ def registry_dump_command(ctx: click.Context):
     default=None,
     help="Version to materialize (e.g., 'v2'). Requires --views with exactly one feature view.",
 )
+@click.option(
+    "--progress-file",
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Write structured JSONL events to a new file (requires root --output).",
+)
 @click.pass_context
 def materialize_command(
     ctx: click.Context,
@@ -441,6 +524,7 @@ def materialize_command(
     views: List[str],
     disable_event_timestamp: bool,
     feature_view_version: Optional[str],
+    progress_file: Optional[Path],
 ):
     """
     Run a (non-incremental) materialization job to ingest data into the online store. Feast
@@ -452,7 +536,10 @@ def materialize_command(
 
     If --disable-event-timestamp is used, timestamps are not required and all available data will be materialized using the current datetime as the event timestamp.
     """
-    store = create_feature_store(ctx)
+    if progress_file is not None and not machine_output():
+        raise click.UsageError("--progress-file requires root --output")
+    if machine_output() and progress_file is not None and progress_file.exists():
+        raise click.UsageError("Progress file already exists; choose a new path")
 
     if disable_event_timestamp:
         if start_ts or end_ts:
@@ -470,16 +557,33 @@ def materialize_command(
             raise click.UsageError(
                 "START_TS and END_TS are required unless --disable-event-timestamp is used"
             )
-        start_date = utils.make_tzaware(parser.parse(start_ts))
-        end_date = utils.make_tzaware(parser.parse(end_ts))
+        try:
+            start_date = utils.make_tzaware(parser.parse(start_ts))
+            end_date = utils.make_tzaware(parser.parse(end_ts))
+        except (ValueError, OverflowError) as e:
+            raise click.UsageError(
+                "START_TS and END_TS must be ISO 8601 timestamps"
+            ) from e
 
-    store.materialize(
-        feature_views=None if not views else views,
-        start_date=start_date,
-        end_date=end_date,
-        disable_event_timestamp=disable_event_timestamp,
-        version=feature_view_version,
-    )
+    store = create_feature_store(ctx)
+    if machine_output():
+        _structured_materialize(
+            store,
+            start_date,
+            end_date,
+            list(views),
+            feature_view_version,
+            progress_file,
+            disable_event_timestamp=disable_event_timestamp,
+        )
+    else:
+        store.materialize(
+            feature_views=None if not views else views,
+            start_date=start_date,
+            end_date=end_date,
+            disable_event_timestamp=disable_event_timestamp,
+            version=feature_view_version,
+        )
 
 
 @cli.command("materialize-incremental")
@@ -496,12 +600,18 @@ def materialize_command(
     default=None,
     help="Version to materialize (e.g., 'v2'). Requires --views with exactly one feature view.",
 )
+@click.option(
+    "--progress-file",
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Write structured JSONL events to a new file (requires root --output).",
+)
 @click.pass_context
 def materialize_incremental_command(
     ctx: click.Context,
     end_ts: str,
     views: List[str],
     feature_view_version: Optional[str],
+    progress_file: Optional[Path],
 ):
     """
     Run an incremental materialization job to ingest new data into the online store. Feast will read
@@ -511,12 +621,104 @@ def materialize_incremental_command(
 
     END_TS should be in ISO 8601 format, e.g. '2021-07-16T19:20:01'
     """
+    if progress_file is not None and not machine_output():
+        raise click.UsageError("--progress-file requires root --output")
+    if machine_output() and progress_file is not None and progress_file.exists():
+        raise click.UsageError("Progress file already exists; choose a new path")
+    try:
+        end_date = utils.make_tzaware(datetime.fromisoformat(end_ts))
+    except ValueError as e:
+        raise click.UsageError("END_TS must be an ISO 8601 timestamp") from e
     store = create_feature_store(ctx)
-    store.materialize_incremental(
-        feature_views=None if not views else views,
-        end_date=utils.make_tzaware(datetime.fromisoformat(end_ts)),
-        version=feature_view_version,
+    if machine_output():
+        _structured_materialize(
+            store, None, end_date, list(views), feature_view_version, progress_file
+        )
+    else:
+        store.materialize_incremental(
+            feature_views=None if not views else views,
+            end_date=end_date,
+            version=feature_view_version,
+        )
+
+
+def _structured_materialize(
+    store: Any,
+    start_date: Optional[datetime],
+    end_date: datetime,
+    views: List[str],
+    version: Optional[str],
+    progress_file: Optional[Path],
+    disable_event_timestamp: bool = False,
+) -> None:
+    """Report only committed view checkpoints; reject unsupported engines before writes."""
+    state = invocation.get()
+    assert state is not None
+    if store.config.provider != "local" or store.config.online_store.type != "sqlite":
+        raise StructuredError(
+            "UNSUPPORTED_CAPABILITY",
+            "This topology has no structured materialization contract.",
+            "Use a local SQLite feature store or omit root --output.",
+        )
+    if version is not None and len(views) != 1:
+        raise click.UsageError("--version requires exactly one --views value")
+    report = MaterializationReport(
+        project=store.project,
+        incremental=start_date is None,
+        start_date=start_date,
+        end_date=end_date,
+        version=version,
     )
+
+    def execute() -> None:
+        try:
+            if start_date is None:
+                store.materialize_incremental(
+                    end_date=end_date,
+                    feature_views=views or None,
+                    version=version,
+                    report=report,
+                )
+            else:
+                store.materialize(
+                    start_date=start_date,
+                    end_date=end_date,
+                    feature_views=views or None,
+                    version=version,
+                    disable_event_timestamp=disable_event_timestamp,
+                    report=report,
+                )
+        except ValueError as e:
+            if (
+                not report.started
+                and "Structured materialization does not support" in str(e)
+            ):
+                raise StructuredError(
+                    "UNSUPPORTED_CAPABILITY",
+                    "This feature view or engine has no structured materialization contract.",
+                    "Omit root --output for unsupported providers or views.",
+                ) from e
+            raise
+        finally:
+            state.operation_started = report.started
+            if report.started:
+                state.operation_data = {
+                    **report.result(),
+                    "remaining_outcome": "unknown",
+                }
+
+    if progress_file is None:
+        execute()
+    else:
+        with progress_events(progress_file) as write_event:
+            report.on_event = write_event
+            try:
+                execute()
+            except BaseException:
+                report.emit("failed", remaining_outcome="unknown")
+                raise
+            report.emit("completed", completed_views=len(report.views))
+    state.data = report.result()
 
 
 @cli.command("init")
